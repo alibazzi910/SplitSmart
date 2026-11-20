@@ -1,103 +1,122 @@
-import Image from "next/image";
+import Link from "next/link";
+import { db } from "./db";
+import { ExpenseForm, GroupForm, MemberForm } from "./forms";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const signedMoney = new Intl.NumberFormat("en-US", {
+  style: "currency", currency: "USD", signDisplay: "exceptZero",
+});
+
+export default async function Home({ searchParams }: {
+  searchParams: Promise<{ group?: string | string[] }>;
+}) {
+  const { group } = await searchParams;
+  const groups = await db.group.findMany({ orderBy: { id: "desc" } });
+  const selection = group === undefined ? groups[0] : groups.find(({ id }) => String(id) === group);
+  const selected = selection && await db.group.findUnique({
+    where: { id: selection.id },
+    include: {
+      members: { orderBy: { id: "asc" } },
+      expenses: {
+        orderBy: { id: "desc" },
+        include: { payer: true, shares: { orderBy: { memberId: "asc" }, include: { member: true } } },
+      },
+    },
+  });
+
+  const balances = new Map(selected?.members.map(({ id }) => [id, 0]));
+  for (const expense of selected?.expenses ?? []) {
+    balances.set(expense.payerId, (balances.get(expense.payerId) ?? 0) + expense.amountCents);
+    for (const share of expense.shares) {
+      balances.set(share.memberId, (balances.get(share.memberId) ?? 0) - share.amountCents);
+    }
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
+    <>
+      <header className="border-b border-teal-950/10 bg-white">
+        <div className="mx-auto max-w-6xl px-5 py-5 text-xl font-bold tracking-tight text-teal-950">SplitSmart</div>
+      </header>
+      <main className="mx-auto grid max-w-6xl items-start gap-6 px-5 py-8 md:grid-cols-[16rem_minmax(0,1fr)]">
+        <aside className="panel space-y-5">
+          <h2>Groups</h2>
+          {groups.length ? (
+            <nav aria-label="Groups" className="grid gap-1">
+              {groups.map(({ id, name }) => (
+                <Link key={id} href={"/?group=" + id}
+                  aria-current={selected?.id === id ? "page" : undefined}
+                  className="rounded-lg px-3 py-2 text-sm font-semibold text-teal-950 hover:bg-teal-50 aria-[current=page]:bg-teal-100">
+                  {name}
+                </Link>
+              ))}
+            </nav>
+          ) : <p className="muted">No groups yet.</p>}
+          <GroupForm />
+        </aside>
+        {selected ? (
+          <div key={selected.id} className="min-w-0 space-y-6">
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">{selected.name}</h1>
+            <section className="panel space-y-4">
+              <h2>Members &amp; balances</h2>
+              {selected.members.length ? (
+                <>
+                  <p className="muted">Positive balances are amounts to receive. Negative balances are amounts owed.</p>
+                  <ul className="divide-y divide-slate-100">
+                    {selected.members.map((member) => {
+                      const balance = balances.get(member.id) ?? 0;
+                      return (
+                        <li key={member.id} className="flex items-start justify-between gap-4 py-2">
+                          <span>{member.name}</span>
+                          <span className={balance > 0 ? "text-teal-800" : balance < 0 ? "text-red-800" : "text-slate-600"}>
+                            {signedMoney.format(balance / 100)}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              ) : <p className="muted">No members yet. Add someone to start splitting expenses.</p>}
+              <MemberForm groupId={selected.id} />
+            </section>
+            <section className="panel space-y-4">
+              <h2>New expense</h2>
+              {selected.members.length
+                ? <ExpenseForm groupId={selected.id} members={selected.members} />
+                : <p className="muted">Add a member before recording an expense.</p>}
+            </section>
+            <section className="panel space-y-4">
+              <h2>Expense history</h2>
+              {selected.expenses.length ? (
+                <ul className="divide-y divide-slate-100">
+                  {selected.expenses.map((expense) => (
+                    <li key={expense.id} className="space-y-1 py-4 first:pt-0 last:pb-0">
+                      <div className="flex justify-between gap-4 font-semibold">
+                        <span>{expense.description}</span>
+                        <span>{money.format(expense.amountCents / 100)}</span>
+                      </div>
+                      <p className="muted">Paid by {expense.payer.name}</p>
+                      <ul aria-label="Participant shares" className="flex flex-wrap gap-2 text-xs">
+                        {expense.shares.map(({ member, amountCents }) => (
+                          <li key={member.id} className="rounded-md bg-slate-100 px-2 py-1">
+                            {member.name} · {money.format(amountCents / 100)}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="muted">No expenses recorded yet.</p>}
+            </section>
+          </div>
+        ) : (
+          <section className="panel space-y-2">
+            <h1 className="text-2xl font-bold">{groups.length ? "Group unavailable" : "Create your first group"}</h1>
+            <p className="muted">{groups.length ? "Select a group from the list." : "Start with a group for your trip, household, or event."}</p>
+          </section>
+        )}
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+    </>
   );
 }
